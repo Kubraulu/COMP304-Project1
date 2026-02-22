@@ -96,13 +96,18 @@ int parse_command(char *buf, struct command_t *command) {
     buf++;
     len--;
   }
-  while (len > 0 && strchr(splitters, buf[len - 1]) != NULL)
+  while (len > 0 && strchr(splitters, buf[len - 1]) != NULL){
     buf[--len] = 0; // trim right whitespace
-
+}
   if (len > 0 && buf[len - 1] == '?') // auto-complete
     command->auto_complete = true;
-  if (len > 0 && buf[len - 1] == '&') // background
-    command->background = true;
+
+//I commented that part because in that part '&' takes as a separate token
+// and I wanted to control background detection manually inside the parsing loop
+  //if (len > 0 && buf[len - 1] == '&') // background
+  //	command->background = true;
+//	buf[len - 1] = '\0';
+  //	len--;
 
   char *pch = strtok(buf, splitters);
   if (pch == NULL) {
@@ -129,6 +134,12 @@ int parse_command(char *buf, struct command_t *command) {
 
     if (len == 0)
       continue; // empty arg, go for next
+
+    if (strcmp(arg, "&") == 0){
+      command->background = true;		
+      continue; // handled before
+    	}
+    	
     while (len > 0 && strchr(splitters, arg[0]) != NULL) // trim left whitespace
     {
       arg++;
@@ -154,10 +165,6 @@ int parse_command(char *buf, struct command_t *command) {
       command->next = c;
       continue;
     }
-
-    // background process
-    if (strcmp(arg, "&") == 0)
-      continue; // handled before
 
     // handle input redirection
     redirect_index = -1;
@@ -185,12 +192,14 @@ int parse_command(char *buf, struct command_t *command) {
       arg[--len] = 0;
       arg++;
     }
+
     command->args =
         (char **)realloc(command->args, sizeof(char *) * (arg_index + 1));
     command->args[arg_index] = (char *)malloc(len + 1);
     strcpy(command->args[arg_index++], arg);
+    
   }
-  command->arg_count = arg_index;
+  	  command->arg_count = arg_index;
 
   // increase args size by 2
   command->args = (char **)realloc(command->args,
@@ -204,7 +213,6 @@ int parse_command(char *buf, struct command_t *command) {
   command->args[0] = strdup(command->name);
   // set args[arg_count-1] (last) to NULL
   command->args[command->arg_count - 1] = NULL;
-
   return 0;
 }
 
@@ -245,7 +253,7 @@ int prompt(struct command_t *command) {
   buf[0] = 0;
   while (1) {
     c = getchar();
-    // printf("Keycode: %u\n", c); // DEBUG: uncomment for debugging
+    //printf("Keycode: %u\n", c); // DEBUG: uncomment for debugging
 
     if (c == 9) // handle tab
     {
@@ -294,12 +302,11 @@ int prompt(struct command_t *command) {
   if (index > 0 && buf[index - 1] == '\n') // trim newline from the end
     index--;
   buf[index++] = '\0'; // null terminate string
-
   strcpy(oldbuf, buf);
 
   parse_command(buf, command);
 
-  // print_command(command); // DEBUG: uncomment for debugging
+  //print_command(command); // DEBUG: uncomment for debugging
 
   // restore the old settings
   tcsetattr(STDIN_FILENO, TCSANOW, &backup_termios);
@@ -324,6 +331,11 @@ int process_command(struct command_t *command) {
   }
 
   pid_t pid = fork();
+  
+  if(pid < 0){
+  	printf("fork failed");
+  }
+  
   if (pid == 0) // child
   {
     /// This shows how to do exec with environ (but is not available on MacOs)
@@ -336,18 +348,80 @@ int process_command(struct command_t *command) {
 
     // TODO: do your own exec with path resolving using execv()
     // do so by replacing the execvp call below
-    execvp(command->name, command->args); // exec+args+path
+   //execvp(command->name, command->args); // exec+args+path
+
+   // execv() does not search for path so i manually try dirs in path
+	char *path = getenv("PATH");
+	if(path == NULL){
+	//	return EXIT;
+		exit(44);
+	}
+
+	char path_copy[4444];
+	strcpy(path_copy, path);
+	char *start =path_copy;
+	char *track;
+
+	//if command includes '/' dont search for path
+	if(strchr(command->name, '/')){
+		execv(command->name, command->args);
+		perror("execv failed, check the bug");
+		exit(44);
+	}
+
+	//split  path by ':' and try until found an executable one
+	while(1){
+		track = strchr(start, ':');
+		if(track != NULL){
+			*track = '\0'; //string division for temp, i added '\0' at the end for that
+		}
+		
+		char options[4444];
+
+		if(*start == '\0'){
+			sprintf(options, "./%s", command->name);
+		}
+		else{
+			sprintf(options, "%s/%s", start, command->name);
+		}
+
+		//X_OK checks for file exists and executable
+		if(access(options, X_OK) ==0){
+			execv(options, command->args);
+			perror("execv failed, check the bug-2");
+			exit(44);
+		}
+
+		if(track == NULL){
+			break;
+		}
+		start = track + 1;
+	}
+	
     printf("-%s: %s: command not found\n", sysname, command->name);
     exit(127);
   } else {
     // TODO: implement background processes here
-    wait(0); // wait for child process to finish
-    return SUCCESS;
+    	if(command->background == false){
+    		int status =0;
+			waitpid(pid, &status, 0); // wait for child process to finish
+   		 }
+    	else{ //do not wait return prompt immediately
+        	printf("process is running in the bg, pid: %d\n", pid);
+   		 }
+		return SUCCESS;
   }
 }
 
 int main() {
   while (1) {
+
+	//this part cleans finished bg processes so they dont become zombies
+	//WNOHANG makes sure the shell doesnt block while checking
+	int unused;
+	while(waitpid(-1, &unused, WNOHANG) > 0){
+	}
+	
     struct command_t *command =
         (struct command_t *)malloc(sizeof(struct command_t));
     memset(command, 0, sizeof(struct command_t)); // set all bytes to 0

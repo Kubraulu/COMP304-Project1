@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <termios.h> // termios, TCSANOW, ECHO, ICANON
 #include <unistd.h>
+#include <fcntl.h> //for open(), O_RDONLY, O_CREAT, O_TRUNC, O_APPEND
 const char *sysname = "shellish";
 
 enum return_codes {
@@ -20,6 +21,9 @@ struct command_t {
   bool auto_complete;
   int arg_count;
   char **args;
+  //redirects[0] = < inputfile
+  //redirects[1] = > outputfile (truncate)
+  //redirects[2] = >> appendfile 
   char *redirects[3];     // in/out redirection
   struct command_t *next; // for piping
 };
@@ -338,6 +342,49 @@ int process_command(struct command_t *command) {
   
   if (pid == 0) // child
   {
+
+  	// for input file 
+	if(command->redirects[0] != NULL){
+		int inputFile = open(command->redirects[0], O_RDONLY);
+		if(inputFile == -1){
+			perror("can not open file fpr input");
+			exit(1);
+		}
+		dup2(inputFile, 0); //stdin now is inputFile
+		close(inputFile);
+	}
+
+	// for output overwrite >
+	if(command->redirects[1] != NULL){
+			// i need to use O_CREAT because of that i have to have some permissions like 0644:
+			//6= owner: read + write
+			//4= group: read
+			//4= others: read
+			int outputFile = open(command->redirects[1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			if(outputFile == -1){
+				perror("can not open file fpr output");
+				exit(1);
+			}
+			dup2(outputFile, 1); //stdout now is outputFile
+			close(outputFile);
+		}
+
+	// for output append  >>
+	if(command->redirects[2] != NULL){
+			// i need to use O_CREAT because of that i have to have some permissions like 0644:
+			//6= owner: read + write
+			//4= group: read
+			//4= others: read
+			int appendFile = open(command->redirects[2], O_WRONLY | O_CREAT | O_APPEND, 0644);
+			if(appendFile == -1){
+				perror("can not open file fpr append");
+				exit(1);
+			}
+			dup2(appendFile, 2); //stdout now is appendFile
+			close(appendFile);
+		}
+
+
     /// This shows how to do exec with environ (but is not available on MacOs)
     // extern char** environ; // environment variables
     // execvpe(command->name, command->args, environ); // exec+args+path+environ
